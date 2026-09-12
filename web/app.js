@@ -29,6 +29,27 @@ const stages = [
   ["decode", "浏览器解码", "每帧 processingDuration"],
   ["display", "接收 → 呈现", "含解码、抖动缓冲及合成"],
 ];
+const chartSeries = [
+  ["total", "总延迟", "#e9bd7a", "ms"],
+  ["upload", "上传", "#89b4fa", "ms"],
+  ["processing", "处理 / 等待", "#f38ba8", "ms"],
+  ["render", "Vulkan 渲染", "#9ee8ca", "ms"],
+  ["convert", "CUDA 转换", "#cba6f7", "ms"],
+  ["encode", "NVENC 编码", "#f9e2af", "ms"],
+  ["downlink", "下行", "#74c7ec", "ms"],
+  ["decode", "解码", "#a6e3a1", "ms"],
+  ["display", "接收 → 呈现", "#fab387", "ms"],
+  ["bandwidth", "带宽", "#89dceb", "Mbps"],
+  ["rtt", "RTT", "#eba0ac", "ms"],
+  ["fps", "解码 FPS", "#f5c2e7", "fps"],
+];
+const history = Object.fromEntries(chartSeries.map(([id]) => [id, []]));
+const latest = {};
+const chart = $("telemetry-chart"),
+  chartContext = chart.getContext("2d"),
+  chartTooltip = $("chart-tooltip");
+let chartLayout = null,
+  chartHoverTime = null;
 for (const [id, label, method] of stages) {
   samples[id] = [];
   const tr = document.createElement("tr");
@@ -40,6 +61,18 @@ for (const [id, label, method] of stages) {
   }
   $("latencies").append(tr);
 }
+for (const [id, label, color] of chartSeries) {
+  const item = document.createElement("span");
+  item.className = "legend-item";
+  const swatch = document.createElement("i");
+  swatch.style.backgroundColor = color;
+  item.append(swatch);
+  const text = document.createElement("span");
+  text.dataset.series = id;
+  text.textContent = label;
+  item.append(text);
+  $("chart-legend").append(item);
+}
 function log(text) {
   const node = document.createElement("div");
   node.textContent = new Date().toLocaleTimeString() + " " + text;
@@ -48,8 +81,15 @@ function log(text) {
 }
 function add(id, value) {
   if (!Number.isFinite(value) || value < 0 || value > 60000) return;
+  history[id].push({ t: performance.now(), v: value });
+  latest[id] = value;
   samples[id].push(value);
   if (samples[id].length > 512) samples[id].shift();
+}
+function setMetric(id, value) {
+  if (!Number.isFinite(value) || value < 0) return;
+  history[id].push({ t: performance.now(), v: value });
+  latest[id] = value;
 }
 function pct(a, p) {
   if (!a.length) return null;
@@ -58,6 +98,153 @@ function pct(a, p) {
 }
 function ms(v) {
   return v == null ? "—" : v.toFixed(v < 1 ? 3 : 1) + " ms";
+}
+function chartValue(unit, value) {
+  if (value == null) return "—";
+  if (unit === "Mbps") return value.toFixed(2) + " Mbps";
+  if (unit === "fps") return value.toFixed(1) + " fps";
+  return ms(value);
+}
+function nearestPoint(points, time) {
+  if (!points.length) return null;
+  let lo = 0,
+    hi = points.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].t < time) lo = mid + 1;
+    else hi = mid;
+  }
+  const right = points[lo],
+    left = points[Math.max(0, lo - 1)];
+  return Math.abs(right.t - time) < Math.abs(left.t - time) ? right : left;
+}
+function plotPoints(values, maxPoints) {
+  if (values.length <= maxPoints) return values;
+  const bucketSize = Math.ceil(values.length / maxPoints);
+  const result = [];
+  for (let start = 0; start < values.length; start += bucketSize) {
+    const end = Math.min(values.length, start + bucketSize);
+    let first = values[start],
+      last = values[end - 1],
+      low = first,
+      high = first;
+    for (let i = start + 1; i < end; i++) {
+      if (values[i].v < low.v) low = values[i];
+      if (values[i].v > high.v) high = values[i];
+    }
+    result.push(first, low, high, last);
+  }
+  return result.sort((a, b) => a.t - b.t);
+}
+function drawChart() {
+  const rect = chart.getBoundingClientRect();
+  const width = Math.max(320, Math.floor(rect.width));
+  const height = Math.max(220, Math.floor(rect.height));
+  const dpr = window.devicePixelRatio || 1;
+  if (chart.width !== width * dpr || chart.height !== height * dpr) {
+    chart.width = width * dpr;
+    chart.height = height * dpr;
+  }
+  chartContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+  chartContext.clearRect(0, 0, width, height);
+  let pointCount = 0,
+    minTime = Infinity,
+    maxTime = -Infinity;
+  for (const [id] of chartSeries) {
+    for (const point of history[id]) {
+      pointCount++;
+      minTime = Math.min(minTime, point.t);
+      maxTime = Math.max(maxTime, point.t);
+    }
+  }
+  if (!pointCount) {
+    chartContext.fillStyle = "#6e8098";
+    chartContext.font = "12px sans-serif";
+    chartContext.fillText("连接后开始记录历史数据", 18, height / 2);
+    for (const [id, label] of chartSeries) {
+      const legend = document.querySelector(`[data-series="${id}"]`);
+      if (legend) legend.textContent = label;
+    }
+    chartTooltip.hidden = true;
+    chartLayout = null;
+    return;
+  }
+  const timeSpan = Math.max(1000, maxTime - minTime);
+  const left = 48,
+    right = 14,
+    top = 18,
+    bottom = 28,
+    plotWidth = width - left - right,
+    plotHeight = height - top - bottom;
+  chartLayout = { left, top, plotWidth, plotHeight, minTime, maxTime: minTime + timeSpan };
+  chartContext.strokeStyle = "#263549";
+  chartContext.lineWidth = 1;
+  chartContext.fillStyle = "#8496ac";
+  chartContext.font = "10px sans-serif";
+  for (let i = 0; i <= 4; i++) {
+    const x = left + (plotWidth * i) / 4;
+    chartContext.beginPath();
+    chartContext.moveTo(x, top);
+    chartContext.lineTo(x, top + plotHeight);
+    chartContext.stroke();
+    const seconds = (timeSpan * i) / 4 / 1000;
+    chartContext.fillText(seconds.toFixed(seconds < 10 ? 1 : 0) + "s", x - 9, height - 8);
+  }
+  for (let i = 0; i <= 4; i++) {
+    const y = top + (plotHeight * i) / 4;
+    chartContext.beginPath();
+    chartContext.moveTo(left, y);
+    chartContext.lineTo(left + plotWidth, y);
+    chartContext.stroke();
+    chartContext.fillText(100 - i * 25 + "%", 12, y + 3);
+  }
+  for (const [id, label, color, unit] of chartSeries) {
+    const values = history[id];
+    if (!values.length) continue;
+    let min = Infinity,
+      max = -Infinity;
+    for (const point of values) {
+      min = Math.min(min, point.v);
+      max = Math.max(max, point.v);
+    }
+    const span = Math.max(max - min, Math.max(Math.abs(max) * 0.02, 1e-6));
+    chartContext.strokeStyle = color;
+    chartContext.globalAlpha = 0.82;
+    chartContext.lineWidth = 1.5;
+    chartContext.beginPath();
+    plotPoints(values, Math.max(300, Math.floor(plotWidth * 2))).forEach((point, index) => {
+      const x = left + ((point.t - minTime) / timeSpan) * plotWidth;
+      const y = top + (1 - (point.v - min) / span) * plotHeight;
+      if (index === 0) chartContext.moveTo(x, y);
+      else chartContext.lineTo(x, y);
+    });
+    chartContext.stroke();
+    chartContext.globalAlpha = 1;
+    const legend = document.querySelector(`[data-series="${id}"]`);
+    if (legend) legend.textContent = `${label} ${chartValue(unit, latest[id])}`;
+  }
+  if (chartHoverTime != null) {
+    const x = left + ((chartHoverTime - minTime) / timeSpan) * plotWidth;
+    chartContext.strokeStyle = "#dce7f1aa";
+    chartContext.setLineDash([4, 4]);
+    chartContext.beginPath();
+    chartContext.moveTo(x, top);
+    chartContext.lineTo(x, top + plotHeight);
+    chartContext.stroke();
+    chartContext.setLineDash([]);
+    const lines = [];
+    for (const [id, label, color, unit] of chartSeries) {
+      const point = nearestPoint(history[id], chartHoverTime);
+      if (point)
+        lines.push(`<span style="color:${color}">${label} ${chartValue(unit, point.v)}</span>`);
+    }
+    chartTooltip.innerHTML = `<b>${((chartHoverTime - minTime) / 1000).toFixed(1)} s</b>${lines.join("")}`;
+    chartTooltip.hidden = false;
+    const tooltipWidth = chartTooltip.offsetWidth;
+    chartTooltip.style.left = Math.min(width - tooltipWidth - 8, Math.max(8, x + 10)) + "px";
+    chartTooltip.style.top = top + 8 + "px";
+  } else chartTooltip.hidden = true;
+  $("chart-range").textContent = `历史 ${(timeSpan / 1000).toFixed(timeSpan < 60000 ? 1 : 0)} s · ${pointCount.toLocaleString()} 点`;
 }
 function redraw() {
   for (const [id] of stages) {
@@ -72,6 +259,7 @@ function redraw() {
     clockOffset == null
       ? "时钟尚未同步。单向网络值是估算。"
       : `时钟估算不确定度 ±${clockUncertainty.toFixed(1)} ms；基于最小 RTT ${bestRtt.toFixed(1)} ms 的往返样本，假设路径对称。`;
+  drawChart();
 }
 function send(obj) {
   if (dc?.readyState === "open" && dc.bufferedAmount < 16384)
@@ -332,8 +520,27 @@ $("clear").onclick = () => {
   seen.clear();
   frames.clear();
   presentations.clear();
+  for (const id of Object.keys(history)) history[id] = [];
+  for (const id of Object.keys(latest)) delete latest[id];
+  chartHoverTime = null;
   redraw();
 };
+chart.onpointermove = (event) => {
+  if (!chartLayout) return;
+  const rect = chart.getBoundingClientRect();
+  const x = Math.max(chartLayout.left, Math.min(rect.width - 14, event.clientX - rect.left));
+  chartHoverTime =
+    chartLayout.minTime +
+    ((x - chartLayout.left) / chartLayout.plotWidth) *
+      (chartLayout.maxTime - chartLayout.minTime);
+  drawChart();
+};
+chart.onpointerleave = () => {
+  chartHoverTime = null;
+  drawChart();
+};
+window.addEventListener("resize", drawChart);
+redraw();
 $("export").onclick = () => {
   const result = {
     at: new Date().toISOString(),
@@ -344,6 +551,7 @@ $("export").onclick = () => {
     },
     units: "milliseconds",
     samples,
+    history,
     notes: "One-way values are estimates. Do not sum stage percentiles.",
   };
   const url = URL.createObjectURL(
@@ -372,26 +580,23 @@ setInterval(async () => {
         ? (inbound.timestamp - lastStats.timestamp) / 1000
         : 0;
       if (elapsed > 0) {
-        $("bandwidth").textContent =
-          (
-            ((inbound.bytesReceived - lastStats.bytesReceived) * 8) /
-            elapsed /
-            1e6
-          ).toFixed(2) + " Mbps";
-        $("fps").textContent =
-          ((inbound.framesDecoded - lastStats.framesDecoded) / elapsed).toFixed(
-            0,
-          ) + " fps";
+        const bandwidth =
+          ((inbound.bytesReceived - lastStats.bytesReceived) * 8) /
+          elapsed /
+          1e6;
+        const fps = (inbound.framesDecoded - lastStats.framesDecoded) / elapsed;
+        $("bandwidth").textContent = bandwidth.toFixed(2) + " Mbps";
+        $("fps").textContent = fps.toFixed(0) + " fps";
+        setMetric("bandwidth", bandwidth);
+        setMetric("fps", fps);
       }
       $("stream").textContent =
         `${inbound.frameWidth ?? 0} × ${inbound.frameHeight ?? 0} · ${codec?.mimeType ?? "H264"} · ${inbound.decoderImplementation ?? "浏览器解码"}`;
       lastStats = inbound;
     }
-    $("rtt").textContent = ms(
-      pair?.currentRoundTripTime == null
-        ? null
-        : pair.currentRoundTripTime * 1000,
-    );
+    const rtt = pair?.currentRoundTripTime == null ? null : pair.currentRoundTripTime * 1000;
+    $("rtt").textContent = ms(rtt);
+    setMetric("rtt", rtt);
     const local = pair && stats.get(pair.localCandidateId),
       remote = pair && stats.get(pair.remoteCandidateId);
     $("details").textContent = JSON.stringify(
@@ -458,6 +663,9 @@ window.viewerDebug = () => ({
   camera: { ...camera },
   sampleCounts: Object.fromEntries(
     Object.entries(samples).map(([k, v]) => [k, v.length]),
+  ),
+  historyCounts: Object.fromEntries(
+    Object.entries(history).map(([k, v]) => [k, v.length]),
   ),
   p50: Object.fromEntries(
     Object.entries(samples).map(([k, v]) => [k, pct(v, 0.5)]),

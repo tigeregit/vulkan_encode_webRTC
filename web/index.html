@@ -59,6 +59,20 @@
           <div><span>WebRTC RTT</span><b id="rtt">—</b></div>
           <div><span>解码帧率</span><b id="fps">—</b></div>
         </div>
+        <div class="chart-panel">
+          <div class="chart-heading">
+            <div>
+              <strong>调试数据历史</strong>
+              <span class="muted">各曲线独立归一化，悬停查看实际值</span>
+            </div>
+            <span id="chart-range" class="muted">等待采样</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="telemetry-chart" aria-label="调试数据历史曲线"></canvas>
+            <div id="chart-tooltip" role="status"></div>
+          </div>
+          <div id="chart-legend" aria-label="曲线图例"></div>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
