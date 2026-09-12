@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Vulkan Remote Viewer</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <span class="logo">V</span><strong>REMOTE VIEWER</strong
+        ><span class="muted">Vulkan · CUDA · NVENC</span>
+      </div>
+      <span id="status">未连接</span><button id="connect">连接服务器</button>
+    </header>
+    <main>
+      <aside>
+        <p class="eyebrow">SERVER LIBRARY</p>
+        <h1>模型库</h1>
+        <p class="muted">模型留在服务器，浏览器只接收视频。</p>
+        <div id="models" aria-label="模型库"></div>
+        <div class="spec">
+          <span>渲染设备</span><strong id="gpu">读取中…</strong
+          ><span>视频流</span><strong id="format">—</strong><span>活动模型</span
+          ><strong id="loaded">—</strong>
+        </div>
+        <button id="reset">重置视角</button>
+        <p class="tips">
+          左键拖动旋转<br />右键 / Shift 拖动平移<br />滚轮或双指捏合缩放<br />双指移动平移
+        </p>
+      </aside>
+      <section class="viewport">
+        <video
+          id="video"
+          autoplay
+          muted
+          playsinline
+          aria-label="服务器渲染视频"
+        ></video>
+        <div id="empty">连接服务器以查看远端 3D 场景</div>
+        <div class="video-caption">
+          <span id="stream">等待视频流</span
+          ><label><input id="debug" type="checkbox" checked /> 调试测量</label>
+        </div>
+      </section>
+      <section class="debug">
+        <div class="debug-title">
+          <div>
+            <p class="eyebrow">LIVE TELEMETRY</p>
+            <h2>从控制到画面</h2>
+          </div>
+          <button id="clear">清空采样</button
+          ><button id="export">导出 JSON</button>
+        </div>
+        <div class="tiles">
+          <div><span>控制 → 呈现 P50</span><b id="total">—</b></div>
+          <div><span>视频接收带宽</span><b id="bandwidth">—</b></div>
+          <div><span>WebRTC RTT</span><b id="rtt">—</b></div>
+          <div><span>解码帧率</span><b id="fps">—</b></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>阶段</th>
+                <th>P50</th>
+                <th>P95</th>
+                <th>P99</th>
+                <th>样本</th>
+                <th>测量方式</th>
+              </tr>
+            </thead>
+            <tbody id="latencies"></tbody>
+          </table>
+        </div>
+        <p id="clock" class="muted">
+          时钟尚未同步。单向网络值是估算，不能视为精确测量。
+        </p>
+        <p class="muted">
+          分位数取最近 512 个样本。各阶段 P95
+          不能相加；总延迟按同一控制事件对应的首个已呈现帧计算。角落标记用于匹配实际视频帧。
+        </p>
+        <pre id="details">尚无 WebRTC 统计</pre>
+        <div id="events" role="log" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

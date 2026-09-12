@@ -1,0 +1,13 @@
+/build*/
+/deps/
+*.log
+*.h264
+.env
+*.env
+!.env.example
+id_ed25519*
+.DS_Store
+core
+core.*
+*.nsys-rep
+*.sqlite
