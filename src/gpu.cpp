@@ -552,22 +552,74 @@ void Gpu::load(const std::vector<Vertex> &data) {
   vertexCount = data.size();
   if (data.empty())
     throw std::runtime_error("empty triangle mesh");
-  VkBufferCreateInfo b{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  b.size = data.size() * sizeof(Vertex);
-  b.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-  VK(vkCreateBuffer(device, &b, nullptr, &vertices));
-  VkMemoryRequirements req;
-  vkGetBufferMemoryRequirements(device, vertices, &req);
-  VkMemoryAllocateInfo a{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  a.allocationSize = req.size;
-  a.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  VK(vkAllocateMemory(device, &a, nullptr, &vertexMemory));
-  VK(vkBindBufferMemory(device, vertices, vertexMemory, 0));
-  void *ptr;
-  VK(vkMapMemory(device, vertexMemory, 0, b.size, 0, &ptr));
-  memcpy(ptr, data.data(), b.size);
-  vkUnmapMemory(device, vertexMemory);
+  // Upload once at model load. Draws must read device-local memory, not PCIe host memory.
+  VkBuffer staging{};
+  VkDeviceMemory stagingMemory{};
+  VkCommandBuffer upload{};
+  VkFence fence{};
+  auto cleanupUpload = [&] {
+    if (fence) vkDestroyFence(device, fence, nullptr);
+    if (upload) vkFreeCommandBuffers(device, commands, 1, &upload);
+    if (staging) vkDestroyBuffer(device, staging, nullptr);
+    if (stagingMemory) vkFreeMemory(device, stagingMemory, nullptr);
+  };
+  try {
+    VkDeviceSize bytes = data.size() * sizeof(Vertex);
+    auto buffer = [&](VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+                      VkBuffer &buffer, VkDeviceMemory &memory) {
+      VkBufferCreateInfo b{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+      b.size = bytes;
+      b.usage = usage;
+      VK(vkCreateBuffer(device, &b, nullptr, &buffer));
+      VkMemoryRequirements req;
+      vkGetBufferMemoryRequirements(device, buffer, &req);
+      VkMemoryAllocateInfo a{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      a.allocationSize = req.size;
+      a.memoryTypeIndex = memoryType(req.memoryTypeBits, properties);
+      VK(vkAllocateMemory(device, &a, nullptr, &memory));
+      VK(vkBindBufferMemory(device, buffer, memory, 0));
+    };
+    buffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+           staging, stagingMemory);
+    buffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertices, vertexMemory);
+    void *ptr;
+    VK(vkMapMemory(device, stagingMemory, 0, bytes, 0, &ptr));
+    memcpy(ptr, data.data(), bytes);
+    vkUnmapMemory(device, stagingMemory);
+    VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc.commandPool = commands;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    VK(vkAllocateCommandBuffers(device, &alloc, &upload));
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK(vkBeginCommandBuffer(upload, &begin));
+    VkBufferCopy copy{0, 0, bytes};
+    vkCmdCopyBuffer(upload, staging, vertices, 1, &copy);
+    VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = vertices;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(upload, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
+    VK(vkEndCommandBuffer(upload));
+    VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VK(vkCreateFence(device, &fi, nullptr, &fence));
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &upload;
+    VK(vkQueueSubmit(queue, 1, &submit, fence));
+    VK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+  } catch (...) {
+    vkDeviceWaitIdle(device);
+    cleanupUpload();
+    throw;
+  }
+  cleanupUpload();
 }
 int Gpu::acquire() {
   for (int j = 0; j < SLOT_COUNT; j++) {
