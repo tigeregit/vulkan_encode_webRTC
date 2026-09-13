@@ -1,3 +1,4 @@
+#define VIEWER_RTC_BUILD
 #include "rtc_bridge.h"
 #include "api/audio/create_audio_device_module.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
@@ -226,7 +227,7 @@ struct Context : PeerConnectionObserver, DataChannelObserver {
   }
 };
 #ifdef _WIN32
-#define EXPORT extern "C" __declspec(dllexport)
+#define EXPORT VIEWER_RTC_API
 #else
 #define EXPORT extern "C" __attribute__((visibility("default")))
 #endif
