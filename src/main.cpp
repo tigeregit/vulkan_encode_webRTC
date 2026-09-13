@@ -203,7 +203,7 @@ int main(int argc, char **argv) {
           return;
         }
         std::string contents((std::istreambuf_iterator<char>(f)), {});
-        std::string ext = std::filesystem::path(name).extension();
+        std::string ext = std::filesystem::path(name).extension().string();
         res.set_header("Cache-Control", "no-store");
         res.set_header("X-Content-Type-Options", "nosniff");
         res.set_content(contents, ext == ".js"    ? "text/javascript"
