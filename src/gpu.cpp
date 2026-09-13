@@ -334,8 +334,9 @@ void Gpu::image(VkFormat format, VkImageUsageFlags usage, bool shared, VkImage &
   vc.image = img;
   vc.viewType = VK_IMAGE_VIEW_TYPE_2D;
   vc.format = format;
-  vc.subresourceRange = {shared ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0,
-                         1};
+  vc.subresourceRange = {static_cast<VkImageAspectFlags>(shared ? VK_IMAGE_ASPECT_COLOR_BIT
+                                                                : VK_IMAGE_ASPECT_DEPTH_BIT),
+                         0, 1, 0, 1};
   VK(vkCreateImageView(device, &vc, nullptr, &view));
 }
 void Gpu::createSlot(Slot &s) {
