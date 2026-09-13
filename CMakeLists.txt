@@ -9,12 +9,77 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-find_package(Vulkan REQUIRED)
 find_package(CUDAToolkit 11.2 REQUIRED)
-find_package(assimp REQUIRED)
-find_package(glm REQUIRED)
-find_package(nlohmann_json REQUIRED)
 find_package(Threads REQUIRED)
+if(WIN32)
+  # Self-contained Windows dependencies under deps/: bundled Vulkan-Headers and
+  # Vulkan-Loader sources, Assimp/GLM/nlohmann-json sources. No Vulkan SDK,
+  # vcpkg, or system package installation is required. The Vulkan import
+  # library is generated from the official loader vulkan-1.def; vulkan-1.dll
+  # itself is installed by the GPU driver.
+  set(VIEWER_VULKAN_HEADERS
+      "${CMAKE_SOURCE_DIR}/deps/vulkan/Vulkan-Headers-vulkan-sdk-1.4.357.0"
+      CACHE PATH "Bundled Vulkan-Headers source tree")
+  set(VIEWER_VULKAN_DEF
+      "${CMAKE_SOURCE_DIR}/deps/vulkan/Vulkan-Loader-vulkan-sdk-1.4.357.0/loader/vulkan-1.def"
+      CACHE FILEPATH "Bundled Vulkan-Loader module definition")
+  foreach(dep "${VIEWER_VULKAN_HEADERS}/include/vulkan/vulkan.h"
+              "${VIEWER_VULKAN_DEF}")
+    if(NOT EXISTS "${dep}")
+      message(
+        FATAL_ERROR
+          "Missing bundled dependency ${dep}; see README Windows section")
+    endif()
+  endforeach()
+  set(VIEWER_VULKAN_IMPLIB "${CMAKE_BINARY_DIR}/vulkan/vulkan-1.lib")
+  if(NOT EXISTS "${VIEWER_VULKAN_IMPLIB}")
+    get_filename_component(viewer_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    find_program(MSVC_LIB NAMES lib.exe HINTS "${viewer_msvc_bin}" REQUIRED)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/vulkan")
+    execute_process(
+      COMMAND "${MSVC_LIB}" /nologo /machine:x64 /def:${VIEWER_VULKAN_DEF}
+              /out:${VIEWER_VULKAN_IMPLIB}
+      RESULT_VARIABLE viewer_vulkan_result
+      ERROR_VARIABLE viewer_vulkan_error)
+    if(NOT viewer_vulkan_result EQUAL 0)
+      message(FATAL_ERROR "lib.exe failed on vulkan-1.def: ${viewer_vulkan_error}")
+    endif()
+  endif()
+  add_library(Vulkan::Vulkan UNKNOWN IMPORTED GLOBAL)
+  set_target_properties(
+    Vulkan::Vulkan
+    PROPERTIES IMPORTED_LOCATION "${VIEWER_VULKAN_IMPLIB}"
+               INTERFACE_INCLUDE_DIRECTORIES "${VIEWER_VULKAN_HEADERS}/include")
+
+  set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/deps/glm-1.0.2"
+                   "${CMAKE_BINARY_DIR}/glm" EXCLUDE_FROM_ALL)
+  set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+  set(JSON_Install OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/deps/json-3.12.0"
+                   "${CMAKE_BINARY_DIR}/nlohmann_json" EXCLUDE_FROM_ALL)
+  set(BUILD_SHARED_LIBS OFF)
+  set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+  set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)
+  set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_OBJ_IMPORTER ON CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_PLY_IMPORTER ON CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_STL_IMPORTER ON CACHE BOOL "" FORCE)
+  set(ASSIMP_BUILD_GLTF_IMPORTER ON CACHE BOOL "" FORCE)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/deps/assimp-5.4.3"
+                   "${CMAKE_BINARY_DIR}/assimp" EXCLUDE_FROM_ALL)
+else()
+  find_package(Vulkan REQUIRED)
+  find_package(assimp REQUIRED)
+  find_package(glm REQUIRED)
+  find_package(nlohmann_json REQUIRED)
+endif()
 set(WEBRTC_ROOT
     ""
     CACHE PATH "Pinned Google libwebrtc package")
@@ -60,6 +125,10 @@ if(WIN32)
             user32
             gdi32)
   target_compile_options(viewer_rtc PRIVATE /GR)
+  # The pinned libwebrtc package is built against the static CRT (/MT); the
+  # bridge must use the same runtime. The plain C boundary keeps the rest of
+  # the viewer on /MD.
+  set_property(TARGET viewer_rtc PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 else()
   if(NOT EXISTS "${WEBRTC_ROOT}/lib/libwebrtc.a")
     message(
@@ -106,7 +175,10 @@ if(WIN32)
 endif()
 target_compile_options(
   viewer_gpu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=per-thread>)
-find_program(GLSLANG glslangValidator REQUIRED)
+# glslang 16+ ships the tool as `glslang`; the bundled Windows build lives in
+# deps/glslang/bin.
+find_program(GLSLANG NAMES glslangValidator glslang
+             HINTS "${CMAKE_SOURCE_DIR}/deps/glslang/bin" REQUIRED)
 foreach(shader scene.vert scene.frag)
   add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/shaders/${shader}.spv"
