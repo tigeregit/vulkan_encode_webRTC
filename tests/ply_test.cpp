@@ -1,4 +1,4 @@
-#include "ply.hpp"
+#include "assets/ply.hpp"
 #include <bit>
 #include <cmath>
 #include <filesystem>

@@ -1,5 +1,5 @@
-#include "gpu.hpp"
-#include "library.hpp"
+#include "assets/library.hpp"
+#include "render/gpu.hpp"
 #include <fstream>
 #include <iostream>
 #include <algorithm>

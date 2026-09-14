@@ -1,101 +1,24 @@
-#include "ply.hpp"
-#include <algorithm>
+#include "assets/ply.hpp"
+#include "assets/ply_parse.hpp"
 #include <array>
 #include <bit>
 #include <cmath>
-#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 namespace {
-struct Type {
-  int bytes;
-  bool floating;
-  bool sign;
-};
-Type type(const std::string &s) {
-  if (s == "char" || s == "int8")
-    return {1, false, true};
-  if (s == "uchar" || s == "uint8")
-    return {1, false, false};
-  if (s == "short" || s == "int16")
-    return {2, false, true};
-  if (s == "ushort" || s == "uint16")
-    return {2, false, false};
-  if (s == "int" || s == "int32")
-    return {4, false, true};
-  if (s == "uint" || s == "uint32")
-    return {4, false, false};
-  if (s == "float" || s == "float32")
-    return {4, true, true};
-  if (s == "double" || s == "float64")
-    return {8, true, true};
-  throw std::runtime_error("unsupported PLY scalar: " + s);
-}
 struct Property {
   std::string name;
-  Type value;
+  PlyType value;
   bool list = false;
-  Type count{0, false, false};
+  PlyType count{0, false, false};
 };
 struct Element {
   std::string name;
   size_t count;
   std::vector<Property> properties;
 };
-double scalar(std::istream &in, Type t, bool ascii, bool swap) {
-  if (ascii) {
-    double v;
-    if (!(in >> v) || !std::isfinite(v))
-      throw std::runtime_error("invalid/truncated ASCII PLY");
-    return v;
-  }
-  std::array<unsigned char, 8> b{};
-  if (!in.read(reinterpret_cast<char *>(b.data()), t.bytes))
-    throw std::runtime_error("truncated binary PLY");
-  if (swap)
-    std::reverse(b.begin(), b.begin() + t.bytes);
-  if (t.floating) {
-    if (t.bytes == 4) {
-      float v;
-      memcpy(&v, b.data(), 4);
-      return v;
-    }
-    double v;
-    memcpy(&v, b.data(), 8);
-    return v;
-  }
-  if (t.sign) {
-    if (t.bytes == 1) {
-      int8_t v;
-      memcpy(&v, b.data(), 1);
-      return v;
-    }
-    if (t.bytes == 2) {
-      int16_t v;
-      memcpy(&v, b.data(), 2);
-      return v;
-    }
-    int32_t v;
-    memcpy(&v, b.data(), 4);
-    return v;
-  }
-  if (t.bytes == 1)
-    return b[0];
-  if (t.bytes == 2) {
-    uint16_t v;
-    memcpy(&v, b.data(), 2);
-    return v;
-  }
-  uint32_t v;
-  memcpy(&v, b.data(), 4);
-  return v;
-}
-size_t integer(double v, size_t limit) {
-  if (!std::isfinite(v) || v < 0 || std::floor(v) != v || v > double(limit))
-    throw std::runtime_error("invalid PLY count/index");
-  return size_t(v);
-}
 } // namespace
 std::vector<Vertex> read_ply(const std::filesystem::path &path) {
   std::ifstream in(path, std::ios::binary);
@@ -134,7 +57,7 @@ std::vector<Vertex> read_ply(const std::filesystem::path &path) {
       s >> n >> c;
       if (!s)
         throw std::runtime_error("invalid PLY element");
-      elements.push_back({n, integer(c, 15000000), {}});
+      elements.push_back({n, ply_integer(c, 15000000), {}});
     } else if (word == "property") {
       if (elements.empty())
         throw std::runtime_error("PLY property without element");
@@ -144,12 +67,12 @@ std::vector<Vertex> read_ply(const std::filesystem::path &path) {
       if (t == "list") {
         std::string count;
         s >> count >> t >> n;
-        p = {n, type(t), true, type(count)};
+        p = {n, ply_type(t), true, ply_type(count)};
         if (p.count.floating)
           throw std::runtime_error("floating PLY list count");
       } else {
         s >> n;
-        p = {n, type(t), false, {0, false, false}};
+        p = {n, ply_type(t), false, {0, false, false}};
       }
       if (!s || n.empty())
         throw std::runtime_error("invalid PLY property");
@@ -183,15 +106,15 @@ std::vector<Vertex> read_ply(const std::filesystem::path &path) {
       bool gotFace = false;
       for (const auto &p : e.properties) {
         if (p.list) {
-          size_t count = integer(scalar(in, p.count, ascii, swap), 1000000);
+          size_t count = ply_integer(ply_scalar(in, p.count, ascii, swap), 1000000);
           bool indices = face && (p.name == "vertex_indices" || p.name == "vertex_index");
           if (indices && count != 3)
             throw std::runtime_error("PLY viewer requires triangle faces");
           std::array<uint32_t, 3> f{};
           for (size_t k = 0; k < count; k++) {
-            double value = scalar(in, p.value, ascii, swap);
+            double value = ply_scalar(in, p.value, ascii, swap);
             if (indices)
-              f[k] = uint32_t(integer(value, 14999999));
+              f[k] = uint32_t(ply_integer(value, 14999999));
           }
           if (indices) {
             if (gotFace)
@@ -201,7 +124,7 @@ std::vector<Vertex> read_ply(const std::filesystem::path &path) {
           }
           continue;
         }
-        double value = scalar(in, p.value, ascii, swap);
+        double value = ply_scalar(in, p.value, ascii, swap);
         if (!std::isfinite(value))
           throw std::runtime_error("nonfinite PLY property");
         if (!vertex)
@@ -232,7 +155,7 @@ std::vector<Vertex> read_ply(const std::filesystem::path &path) {
         } else if (name == "rgba" || name == "rgb") {
           if (p.value.floating || p.value.bytes != 4 || p.value.sign)
             throw std::runtime_error("packed PLY rgba/rgb must be uint32 0xAARRGGBB");
-          uint32_t rgba = uint32_t(integer(value, UINT32_MAX));
+          uint32_t rgba = uint32_t(ply_integer(value, UINT32_MAX));
           v.color = {float((rgba >> 16) & 255) / 255, float((rgba >> 8) & 255) / 255,
                      float(rgba & 255) / 255, name == "rgba" ? float(rgba >> 24) / 255 : 1.f};
         }

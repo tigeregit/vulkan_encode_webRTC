@@ -1,5 +1,6 @@
-#include "library.hpp"
-#include "ply.hpp"
+#include "assets/library.hpp"
+#include "assets/ply.hpp"
+#include "core/mesh_fit.hpp"
 #include <algorithm>
 #include <assimp/DefaultIOSystem.h>
 #include <assimp/Importer.hpp>
@@ -8,13 +9,16 @@
 #include <cctype>
 #include <cmath>
 namespace fs = std::filesystem;
-static bool inside(const fs::path &p, const fs::path &root) {
+namespace {
+bool inside(const fs::path &p, const fs::path &root) {
   auto a = root.begin(), b = p.begin();
   for (; a != root.end(); ++a, ++b)
     if (b == p.end() || *a != *b)
       return false;
   return true;
 }
+// Confines Assimp's sidecar file access (materials, textures) to the library
+// directory.
 class LibraryIO : public Assimp::DefaultIOSystem {
   fs::path root;
   bool allowed(const char *file) const {
@@ -32,6 +36,7 @@ public:
     return allowed(file) && !strchr(mode, 'w') ? DefaultIOSystem::Open(file, mode) : nullptr;
   }
 };
+} // namespace
 std::vector<std::string> list_models(const fs::path &root) {
   std::vector<std::string> names;
   auto canonical = fs::canonical(root);
@@ -57,17 +62,7 @@ std::vector<Vertex> load_mesh(const fs::path &path, const fs::path &root) {
     throw std::runtime_error("model outside library or exceeds 256 MiB");
   if (p.extension() == ".ply" || p.extension() == ".PLY") {
     auto data = read_ply(p);
-    glm::vec3 lo(INFINITY), hi(-INFINITY);
-    for (auto &v : data) {
-      lo = glm::min(lo, v.position);
-      hi = glm::max(hi, v.position);
-    }
-    auto center = (lo + hi) * .5f;
-    float extent = std::max({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z});
-    if (extent < 1e-9f)
-      throw std::runtime_error("degenerate PLY bounds");
-    for (auto &v : data)
-      v.position = (v.position - center) * (2.f / extent);
+    fit_mesh(data);
     return data;
   }
   Assimp::Importer importer;
@@ -78,7 +73,6 @@ std::vector<Vertex> load_mesh(const fs::path &path, const fs::path &root) {
   if (!scene || !scene->HasMeshes())
     throw std::runtime_error(std::string("model import: ") + importer.GetErrorString());
   std::vector<Vertex> result;
-  glm::vec3 lo(INFINITY), hi(-INFINITY);
   for (unsigned m = 0; m < scene->mNumMeshes; m++) {
     auto *mesh = scene->mMeshes[m];
     aiColor4D color(.25f, .72f, .85f, 1);
@@ -95,22 +89,14 @@ std::vector<Vertex> load_mesh(const fs::path &path, const fs::path &root) {
         auto v = mesh->mVertices[j];
         auto n = mesh->HasNormals() ? mesh->mNormals[j] : aiVector3D(0, 1, 0);
         auto c = mesh->HasVertexColors(0) ? mesh->mColors[0][j] : color;
-        glm::vec3 position(v.x, v.y, v.z);
         if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
           throw std::runtime_error("nonfinite model vertex");
-        lo = glm::min(lo, position);
-        hi = glm::max(hi, position);
-        result.push_back({position, {n.x, n.y, n.z}, {c.r, c.g, c.b, c.a}});
+        result.push_back({{v.x, v.y, v.z}, {n.x, n.y, n.z}, {c.r, c.g, c.b, c.a}});
       }
     }
   }
   if (result.empty())
     throw std::runtime_error("no triangles; point-only PLY is not supported");
-  auto center = (lo + hi) * .5f;
-  float extent = glm::max(hi.x - lo.x, glm::max(hi.y - lo.y, hi.z - lo.z));
-  if (extent < 1e-9f)
-    throw std::runtime_error("degenerate model bounds");
-  for (auto &v : result)
-    v.position = (v.position - center) * (2.f / extent);
+  fit_mesh(result);
   return result;
 }
