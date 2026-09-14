@@ -65,6 +65,22 @@ property list uchar int vertex_indices
 - OBJ/STL/glTF/GLB 通过 Assimp 解析。当前不加载纹理、不播放动画；材质使用基础颜色。导入器限制附属文件只能位于模型库目录内。
 - 单文件上限 256 MiB，展开后最多 500 万三角形。库目录只列顶层文件；未知文件名、越界索引、截断数据、非有限坐标和越界路径会被拒绝。
 
+## 源码结构
+
+`src/` 按职责分层，每层一个静态库与一个 `CMakeLists.txt`：
+
+| 目录 | 目标 | 内容 |
+|---|---|---|
+| `src/core/` | `viewer_core` | 共享数据类型（`Vertex` / `Camera` / `FrameTiming`）、模型单位化、环境变量读取。**只依赖 GLM**，不含 Vulkan/CUDA/NVENC 头文件 |
+| `src/assets/` | `viewer_assets` | PLY 解析（`ply_parse.cpp` 标量解码、`ply.cpp` 组装）与 Assimp 导入、路径沙箱 |
+| `src/render/` | `viewer_gpu` | `gpu_vulkan.cpp` 设备初始化、`gpu_cuda.cpp` 外部内存/信号量互操作、`gpu_render.cpp` 每帧提交、`gpu_nvenc.cpp` 编码、`platform.cpp` 唯一的 Win32/POSIX 分支 |
+| `src/rtc/` | `viewer_rtc` | 公开 C 接口 `rtc_bridge.h`；`rtc_context.cpp` PeerConnection 生命周期、`rtc_encoder.cpp` native frame buffer 与编码器接管 |
+| `src/app/` | `viewer` | `options.cpp` 参数、`app.cpp` 会话状态与遥测、`http.cpp` 路由、`main.cpp` 帧循环 |
+
+跨目录的头文件按 `src` 根下的限定路径引用（如 `#include "render/gpu.hpp"`），因此 `ply_test` 这类纯逻辑测试不再需要 GPU 工具链。NVENC SDK 与驱动 API 头文件只出现在 `render/gpu_internal.hpp`，不会传播给其他目录。
+
+产物位置保持原样：多配置生成器在 `build/<Config>/`，单配置生成器在 `build/`。
+
 ## Ubuntu 22.04 x86_64 构建
 
 需要已有 NVIDIA 驱动和 CUDA Toolkit。建议 CUDA 12/13；本次验证为 CUDA 13.0。CUDA pool API 最低 11.2，但新 GPU / NVENC SDK 13 还要求相应新驱动。本项目启动时检查 NVENC API 版本。
